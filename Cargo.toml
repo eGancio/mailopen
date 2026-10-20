@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+repository = "https://github.com/eGancio/mailopen"
+
+[workspace.dependencies]
+mailopen-core = { path = "crates/core" }
+
+# foundation
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+log = "0.4"
+env_logger = "0.11"
+chrono = "0.4"
+directories = "6"
+
+# mail
+imap = { version = "2.4", default-features = false }
+rustls-connector = { version = "0.23", default-features = false, features = ["platform-verifier", "rustls--aws_lc_rs"] }
+mail-parser = "0.11"
+html2text = "0.17"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls"] }
+keyring = "4"
+# sender logos (Gravatar, domain favicon) and their decoding
+ureq = "3.4"
+md5 = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+
+# ui
+eframe = "0.37"
+egui = "0.37"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true

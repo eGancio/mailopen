@@ -1,0 +1,4 @@
+/target
+/plan
+*.local
+.DS_Store
