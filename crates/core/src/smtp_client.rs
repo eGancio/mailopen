@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use lettre::message::{Mailbox, MultiPart, header::ContentType};
+use lettre::message::{
+    Attachment as MailAttachment, Mailbox, MultiPart, SinglePart, header::ContentType,
+};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 
@@ -46,30 +48,61 @@ pub fn build(account: &Account, out: &OutgoingMessage) -> Result<Message> {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    if sig_html.is_none() && out.html_body.is_none() {
-        return Ok(b.header(ContentType::TEXT_PLAIN).body(out.body.clone())?);
+    let text_part = if sig_html.is_none() && out.html_body.is_none() {
+        None
+    } else {
+        let body_html = match &out.html_body {
+            Some(h) => h.clone(),
+            None => format!(
+                "<div style=\"white-space:pre-wrap;font-family:sans-serif\">{}</div>",
+                escape_html(out.body.trim_end())
+            ),
+        };
+        let (plain, html) = match sig_html {
+            Some(sig) => {
+                let sig_text = crate::html::parse(sig).to_text();
+                (
+                    format!("{}\n\n-- \n{}", out.body.trim_end(), sig_text.trim()),
+                    format!("{body_html}<br><div>{sig}</div>"),
+                )
+            }
+            None => (out.body.clone(), body_html),
+        };
+        Some(MultiPart::alternative_plain_html(plain, html))
+    };
+    if out.attachments.is_empty() {
+        return Ok(match text_part {
+            Some(alt) => b.multipart(alt)?,
+            None => b.header(ContentType::TEXT_PLAIN).body(out.body.clone())?,
+        });
     }
-    let body_html = match &out.html_body {
-        Some(h) => h.clone(),
-        None => format!(
-            "<div style=\"white-space:pre-wrap;font-family:sans-serif\">{}</div>",
-            escape_html(out.body.trim_end())
+    let total: usize = out.attachments.iter().map(|a| a.size()).sum();
+    if total > MAX_ATTACHMENTS {
+        return Err(Error::Smtp(format!(
+            "allegati troppo grandi ({} MB, massimo {} MB)",
+            total / (1024 * 1024),
+            MAX_ATTACHMENTS / (1024 * 1024)
+        )));
+    }
+    let mut mixed = match text_part {
+        Some(alt) => MultiPart::mixed().multipart(alt),
+        None => MultiPart::mixed().singlepart(
+            SinglePart::builder()
+                .header(ContentType::TEXT_PLAIN)
+                .body(out.body.clone()),
         ),
     };
-    let (plain, html) = match sig_html {
-        Some(sig) => {
-            let sig_text = html2text::config::plain_no_decorate()
-                .string_from_read(sig.as_bytes(), 80)
-                .unwrap_or_default();
-            (
-                format!("{}\n\n-- \n{}", out.body.trim_end(), sig_text.trim()),
-                format!("{body_html}<br><div>{sig}</div>"),
-            )
-        }
-        None => (out.body.clone(), body_html),
-    };
-    Ok(b.multipart(MultiPart::alternative_plain_html(plain, html))?)
+    for a in &out.attachments {
+        let ct = ContentType::parse(&a.mime).unwrap_or_else(|_| {
+            ContentType::parse("application/octet-stream").unwrap_or(ContentType::TEXT_PLAIN)
+        });
+        mixed = mixed.singlepart(MailAttachment::new(a.name.clone()).body(a.data.to_vec(), ct));
+    }
+    Ok(b.multipart(mixed)?)
 }
+
+/// Total size of the attachments of one message. Most servers refuse more than 25 MB.
+pub const MAX_ATTACHMENTS: usize = 25 * 1024 * 1024;
 
 /// Minimal HTML escaping for the plain body placed inside the HTML alternative.
 pub fn escape_html(s: &str) -> String {
@@ -197,6 +230,7 @@ mod tests {
             references: vec!["<0@y.it>".into(), "1@y.it".into()],
             html_signature: None,
             html_body: None,
+            attachments: Vec::new(),
         };
         let m = build(&account(), &out).unwrap();
         let raw = String::from_utf8(m.formatted()).unwrap();
@@ -224,6 +258,34 @@ mod tests {
         assert!(raw.contains("<b>Edoardo</b>"));
         assert!(raw.contains("-- \r\nEdoardo Mancinelli"), "{raw}");
         assert_eq!(escape_html("a&b<c>"), "a&amp;b&lt;c&gt;");
+    }
+
+    #[test]
+    fn attachments_make_a_mixed_message() {
+        let out = OutgoingMessage {
+            to: vec!["x@y.it".into()],
+            subject: "Fwd: fattura".into(),
+            body: "In allegato.".into(),
+            attachments: vec![crate::model::Attachment {
+                name: "Fattura 28-2026.pdf".into(),
+                mime: "application/pdf".into(),
+                content_id: None,
+                data: std::sync::Arc::from(&b"%PDF-1.4 test"[..]),
+            }],
+            ..Default::default()
+        };
+        let m = build(&account(), &out).unwrap();
+        let raw = String::from_utf8(m.formatted()).unwrap();
+        assert!(raw.contains("multipart/mixed"), "{raw}");
+        assert!(raw.contains("application/pdf"));
+        assert!(raw.contains("Fattura 28-2026.pdf"));
+        assert!(raw.contains("In allegato."));
+        let back = crate::imap_client::parse_body(&m.formatted());
+        assert_eq!(back.attachments.len(), 1);
+        assert_eq!(
+            back.attachments.first().map(|a| a.data.as_ref()),
+            Some(&b"%PDF-1.4 test"[..])
+        );
     }
 
     #[test]

@@ -32,6 +32,10 @@ impl MailApp {
         let mut open = true;
         let mut changed = false;
         let mut close = false;
+        let mut labels_changed = false;
+        let mut index_changed = false;
+        let mut rebuild = false;
+        let jump = std::mem::take(&mut self.settings_categories);
         egui::Window::new("Impostazioni")
             .id(egui::Id::unique("settings"))
             .collapsible(false)
@@ -109,7 +113,60 @@ impl MailApp {
                                 }
                                 ui.end_row();
                             });
-                        ui.add_space(10.0);
+                        ui.add_space(14.0);
+                        let heading = ui.label(theme::bold("Categorie", 13.0));
+                        if jump {
+                            heading.scroll_to_me(Some(egui::Align::TOP));
+                        }
+                        if crate::ui::organize::editor(ui, &mut self.labels) {
+                            labels_changed = true;
+                        }
+                        ui.add_space(14.0);
+                        ui.label(theme::bold("Documenti", 13.0));
+                        if ui
+                            .checkbox(
+                                &mut self.config.documents_index,
+                                "Indicizza gli allegati della posta (nome, tipo e testo di PDF, Word, Excel), per la vista Documenti",
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                            index_changed = true;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label("Messaggi più recenti per cartella da guardare");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.config.documents_depth)
+                                        .range(50..=20_000),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "L'indice lavora in background con una connessione sua e guarda solo i messaggi nuovi; Cestino, Spam e Bozze sono esclusi. I file restano sul server: sul computer si salvano solo nome, tipo e testo.",
+                            )
+                            .color(theme::tokens(ui).muted)
+                            .size(11.5),
+                        );
+                        if ui
+                            .button("Ricostruisci l'indice")
+                            .on_hover_text("Ricomincia da capo (dopo aver cambiato il numero di messaggi, o se qualcosa non torna)")
+                            .clicked()
+                        {
+                            rebuild = true;
+                        }
+                        if let Ok(dir) = mailopen_core::documents::DocIndex::dir() {
+                            ui.label(
+                                egui::RichText::new(format!("Indice: {}", dir.display()))
+                                    .color(theme::tokens(ui).muted)
+                                    .size(11.5),
+                            );
+                        }
+                        ui.add_space(14.0);
                         ui.label(theme::bold("Account", 13.0));
                         for (i, a) in self.config.accounts.iter_mut().enumerate() {
                             ui.add_space(6.0);
@@ -147,6 +204,15 @@ impl MailApp {
         if changed {
             theme::apply_pref(ctx, self.config.theme);
             self.save_settings();
+        }
+        if labels_changed {
+            self.labels_changed();
+        }
+        if index_changed {
+            self.apply_index_setting();
+        }
+        if rebuild {
+            self.rebuild_indexes();
         }
         if close || !open {
             self.settings_open = false;

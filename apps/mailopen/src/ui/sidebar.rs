@@ -9,6 +9,7 @@ use crate::ui::theme;
 enum Action {
     View(View),
     Rail(Rail),
+    ManageCategories,
 }
 
 const W: f32 = 196.0;
@@ -48,7 +49,81 @@ impl MailApp {
         match action {
             Some(Action::View(v)) => self.set_view(v),
             Some(Action::Rail(r)) => self.select_rail(r),
+            Some(Action::ManageCategories) => {
+                self.settings_open = true;
+                self.settings_categories = true;
+            }
             None => {}
+        }
+    }
+
+    /// "Documenti" and the categories, for the accounts in scope.
+    fn sidebar_organize(&self, ui: &mut egui::Ui, action: &mut Option<Action>) {
+        ui.add_space(14.0);
+        header(ui, "ORGANIZZA");
+        let docs: usize = self
+            .documents
+            .iter()
+            .filter(|(acc, _)| self.in_scope(acc) && self.config.account(acc).is_some())
+            .map(|(_, l)| l.len())
+            .sum();
+        let indexing = self.index_status.keys().any(|acc| self.in_scope(acc));
+        let resp = row(
+            ui,
+            Icon::Document,
+            theme::tokens(ui).text,
+            "Documenti",
+            0,
+            self.view == View::Documents,
+            false,
+        );
+        if ui.is_rect_visible(resp.rect) && docs > 0 {
+            muted_count(ui, resp.rect, &docs.to_string());
+        }
+        let tip = if indexing {
+            "Tutti i file allegati: cerca per tipo, nome o contenuto
+(indicizzazione in corso)"
+        } else {
+            "Tutti i file allegati: cerca per tipo, nome o contenuto"
+        };
+        if resp.on_hover_text(tip).clicked() {
+            *action = Some(Action::View(View::Documents));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(W - 56.0, 16.0), egui::Sense::hover());
+            theme::clipped_text(
+                ui.painter(),
+                rect.left_top(),
+                rect.width(),
+                "CATEGORIE",
+                theme::bold_font(10.0),
+                theme::tokens(ui).muted,
+            );
+            if icons::button(
+                ui,
+                Icon::Gear,
+                11.0,
+                theme::tokens(ui).muted,
+                "Gestisci categorie",
+            )
+            .clicked()
+            {
+                *action = Some(Action::ManageCategories);
+            }
+        });
+        for c in &self.labels.categories {
+            let selected = self.view == View::Category(c.id.clone());
+            let n = self.category_messages(&c.id).len();
+            let resp = dot_row(ui, theme::account_color(c.color), &c.name, selected);
+            if n > 0 && ui.is_rect_visible(resp.rect) {
+                muted_count(ui, resp.rect, &n.to_string());
+            }
+            if resp.clicked() {
+                *action = Some(Action::View(View::Category(c.id.clone())));
+            }
         }
     }
 
@@ -73,6 +148,7 @@ impl MailApp {
         {
             *action = Some(Action::View(View::Unified));
         }
+        self.sidebar_organize(ui, action);
         ui.add_space(14.0);
         header(ui, "ACCOUNT");
         for a in &self.config.accounts {
@@ -172,6 +248,7 @@ impl MailApp {
                 }
             }
         }
+        self.sidebar_organize(ui, action);
     }
 }
 
@@ -253,6 +330,21 @@ fn row(
         }
     }
     resp
+}
+
+/// A muted count at the right end of a sidebar row.
+fn muted_count(ui: &egui::Ui, rect: egui::Rect, text: &str) {
+    let p = ui.painter();
+    let galley = p.layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(11.5),
+        theme::tokens(ui).muted,
+    );
+    let pos = egui::pos2(
+        rect.right() - 14.0 - galley.size().x,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    p.galley(pos, galley, theme::tokens(ui).muted);
 }
 
 fn dot_row(ui: &mut egui::Ui, color: egui::Color32, label: &str, selected: bool) -> egui::Response {

@@ -16,6 +16,7 @@ mailopen-core = { path = "crates/core" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
 chrono = "0.4"
@@ -25,7 +26,8 @@ directories = "6"
 imap = { version = "2.4", default-features = false }
 rustls-connector = { version = "0.23", default-features = false, features = ["platform-verifier", "rustls--aws_lc_rs"] }
 mail-parser = "0.11"
-html2text = "0.17"
+html5ever = "0.39"
+markup5ever_rcdom = "0.39"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls"] }
 keyring = "4"
 # sender logos (Gravatar, domain favicon) and their decoding
@@ -36,6 +38,13 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # ui
 eframe = "0.37"
 egui = "0.37"
+# attachments: native file dialogs, open with the default app, PDF pages (pure Rust)
+rfd = "0.17"
+open = "5"
+hayro = "0.8"
+# .docx/.xlsx previews: zip entries and their XML
+miniz_oxide = "0.8"
+roxmltree = "0.21"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

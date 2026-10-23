@@ -22,6 +22,15 @@ egui.workspace = true
 log.workspace = true
 env_logger.workspace = true
 chrono.workspace = true
+rfd.workspace = true
+open.workspace = true
+hayro.workspace = true
+image.workspace = true
+directories.workspace = true
+
+[build-dependencies]
+# Windows: icon and version info inside mailopen.exe (build.rs)
+embed-resource = "=3.0.11"
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu"] }

@@ -2,11 +2,77 @@
 //! Subject on top, "A" with Cc/Bcc at the right, "Da" as a chip, the body, actions at the
 //! bottom. Recipient fields suggest addresses from the address book while typing.
 
-use mailopen_core::Contacts;
+use mailopen_core::{Attachment, Contacts};
 
 use crate::app::MailApp;
 use crate::ui::icons::{self, Icon};
-use crate::ui::theme;
+use crate::ui::{files, format, theme};
+
+impl ComposeState {
+    /// Add files from disk; problems go to `error`.
+    fn attach_paths(&mut self, paths: &[std::path::PathBuf]) {
+        for p in paths {
+            match files::read_attachment(p) {
+                Ok(a) => self.attachments.push(a),
+                Err(e) => self.error = Some(e),
+            }
+        }
+        let total: usize = self.attachments.iter().map(|a| a.size()).sum();
+        if total > mailopen_core::smtp_client::MAX_ATTACHMENTS {
+            self.error = Some(format!(
+                "Allegati troppo grandi ({}): il massimo è 25 MB.",
+                format::size(u32::try_from(total).unwrap_or(u32::MAX))
+            ));
+        }
+    }
+}
+
+/// The attachments of the message being written, each with a remove button.
+fn attachment_chips(ui: &mut egui::Ui, list: &mut Vec<Attachment>) {
+    if list.is_empty() {
+        return;
+    }
+    let t = theme::tokens(ui);
+    let mut remove = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        for (i, a) in list.iter().enumerate() {
+            egui::Frame::NONE
+                .fill(t.surface_alt)
+                .stroke(egui::Stroke::new(1.0, t.border))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin {
+                    left: 6,
+                    right: 2,
+                    top: 3,
+                    bottom: 3,
+                })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        crate::ui::viewer::file_badge(ui, a, 22.0);
+                        let name: String = a.name.chars().take(40).collect();
+                        ui.label(egui::RichText::new(name).size(12.5));
+                        ui.label(
+                            egui::RichText::new(format::size(
+                                u32::try_from(a.size()).unwrap_or(u32::MAX),
+                            ))
+                            .color(t.muted)
+                            .size(11.5),
+                        );
+                        if icons::button(ui, Icon::Close, 9.0, t.muted, "Togli").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
+        }
+    });
+    if let Some(i) = remove
+        && i < list.len()
+    {
+        list.remove(i);
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct ComposeState {
@@ -28,6 +94,7 @@ pub struct ComposeState {
     pub fresh: bool,
     /// Current selection in the body, in chars (start, end).
     pub selection: (usize, usize),
+    pub attachments: Vec<Attachment>,
 }
 
 impl ComposeState {
@@ -59,7 +126,8 @@ impl MailApp {
         let builder = egui::ViewportBuilder::default()
             .with_title(title)
             .with_inner_size([820.0, 700.0])
-            .with_min_inner_size([560.0, 460.0]);
+            .with_min_inner_size([560.0, 460.0])
+            .with_icon(crate::icon::window_icon());
         let action = ctx.show_viewport_immediate(id, builder, |ui, class| {
             if class == egui::ViewportClass::EmbeddedWindow {
                 // No native windows here (headless harness): egui draws a floating window for us.
@@ -185,6 +253,22 @@ impl MailApp {
             if let Some(n) = &c.note {
                 ui.label(egui::RichText::new(n).color(t.muted).size(12.0));
             }
+            attachment_chips(ui, &mut c.attachments);
+            if !c.attachments.is_empty() {
+                ui.add_space(6.0);
+            }
+            // Files dropped on the window are attached.
+            let dropped: Vec<std::path::PathBuf> = ui.input(|i| {
+                i.raw
+                    .dropped_files
+                    .iter()
+                    .map(|f| f.path().to_path_buf())
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect()
+            });
+            if !dropped.is_empty() {
+                c.attach_paths(&dropped);
+            }
             // Body
             let bottom = 104.0;
             let h = (ui.available_height() - bottom).max(160.0);
@@ -309,14 +393,18 @@ impl MailApp {
                 if icons::button(ui, Icon::Trash, 16.0, t.muted, "Scarta il messaggio").clicked() {
                     action = Some(Action::Close);
                 }
-                let r = icons::button(
+                if icons::button(
                     ui,
                     Icon::Attachment,
                     16.0,
-                    t.border,
-                    "Allegati: prossimamente",
-                );
-                let _ = r;
+                    t.muted,
+                    "Allega file (o trascinali nella finestra)",
+                )
+                .clicked()
+                {
+                    let paths = files::pick_files();
+                    c.attach_paths(&paths);
+                }
             });
         });
         action

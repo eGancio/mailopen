@@ -25,7 +25,7 @@ A crash in a mail client loses a half-written message. This outranks features.
 ## Architecture
 | Layer | Crate | Job |
 |---|---|---|
-| core | `crates/core` | config + keyring, `imap_client`, `smtp_client`, `worker` (one thread per account, `Request` in / `Event` out) |
+| core | `crates/core` | config + keyring, `imap_client`, `smtp_client`, `worker` (one thread per account, `Request` in / `Event` out), `labels` (categories), `documents` + `extract` (attachment index thread per account, text of PDF/Office files) |
 | ui | `apps/mailopen` | `app.rs` holds all state and every action; `ui/*.rs` are thin panels that return an action enum and never block |
 
 - Nothing in `crates/core` may depend on egui/eframe. The GUI never does network I/O.
@@ -44,9 +44,16 @@ Before every commit: `cargo fmt --all`, `cargo clippy --workspace --all-targets`
 ## Look at the result
 - `MAILOPEN_DEMO=1 cargo run -p mailopen --example ui_shot -- inbox /tmp/inbox.png` renders the
   window offscreen (egui_kittest + wgpu, 2x) with fake data; scenes: `inbox`, `compose`,
-  `account`, `light`, `dark`, `settings`. Read the PNG after every UI change and compare with the intended workflow
+  `account`, `light`, `dark`, `settings`, `category`, `unread`, `documents`, `documents-dark`,
+  `documents-search` (third argument = query), `categories`. Read the PNG after every UI change and compare with the intended workflow
   (dark account rail, folders with icons, list with avatar + preview, blue selected row,
   reading pane with icon toolbar). Don't screenshot real windows: they move between Spaces.
+- Real mail: `ui_shot -- eml out.png msg.eml` (also `eml-dark`) shows a raw message in the
+  reading pane; `ui_shot -- viewer out.png msg.eml 0` opens its first attachment in the viewer.
+  `SHOT_H=2600` makes the window taller to see a whole message. Get `.eml` files with
+  `cargo run -p mailopen-core --example dump_eml -- you@x.it 20 /tmp/eml` (configured account)
+  and check parsing with `--example inspect_eml -- /tmp/eml/*.eml` (`DUMP=4000` prints the
+  document). Never commit real mail.
 - `MAILOPEN_DEMO=1 cargo run -p mailopen` opens the window with the same fake data.
 
 ## Running

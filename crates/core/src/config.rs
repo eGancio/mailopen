@@ -115,6 +115,15 @@ pub struct Config {
     /// Fetch sender logos (Gravatar for the address, then the domain's favicon).
     #[serde(default = "default_true")]
     pub sender_logos: bool,
+    /// Senders (lowercased addresses) whose remote images load without asking.
+    #[serde(default)]
+    pub trusted_image_senders: Vec<String>,
+    /// Build the document index (files attached to the mail, with their text).
+    #[serde(default = "default_true")]
+    pub documents_index: bool,
+    /// Newest messages per folder the document index looks at.
+    #[serde(default = "default_documents_depth")]
+    pub documents_depth: u32,
 }
 
 fn default_true() -> bool {
@@ -126,6 +135,9 @@ fn default_refresh() -> u64 {
 }
 fn default_page() -> u32 {
     60
+}
+fn default_documents_depth() -> u32 {
+    1000
 }
 
 impl Config {
@@ -155,6 +167,9 @@ impl Config {
                 theme: ThemePref::System,
                 style: String::new(),
                 sender_logos: true,
+                trusted_image_senders: Vec::new(),
+                documents_index: true,
+                documents_depth: default_documents_depth(),
             });
         }
         let text = std::fs::read_to_string(&path)?;
@@ -162,6 +177,7 @@ impl Config {
             toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
         cfg.refresh_seconds = cfg.refresh_seconds.clamp(20, 3600);
         cfg.messages_per_folder = cfg.messages_per_folder.clamp(10, 500);
+        cfg.documents_depth = cfg.documents_depth.clamp(50, 20_000);
         Ok(cfg)
     }
 
@@ -223,6 +239,9 @@ mod tests {
             theme: ThemePref::Dark,
             style: "Verde".into(),
             sender_logos: true,
+            trusted_image_senders: vec!["news@banca.it".into()],
+            documents_index: true,
+            documents_depth: 1000,
         };
         let text = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&text).unwrap();

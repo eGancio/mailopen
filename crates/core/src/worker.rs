@@ -2,11 +2,13 @@
 //! [`Event`]s on a shared channel; every event carries the account id.
 //! The thread owns the IMAP session and reconnects once when a call fails.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use crate::config::Account;
+use crate::documents::DocList;
 use crate::error::{Error, Result};
 use crate::imap_client::ImapClient;
 use crate::model::{Folder, MessageBody, MessageSummary, OutgoingMessage};
@@ -28,13 +30,34 @@ pub enum Request {
         uid: u32,
         seen: bool,
     },
+    SetFlagged {
+        folder: String,
+        uid: u32,
+        flagged: bool,
+    },
+    Move {
+        folder: String,
+        uid: u32,
+        to: String,
+    },
+    /// Search these folders on the server; at most `limit` results per folder.
+    Search {
+        folders: Vec<String>,
+        query: String,
+        limit: u32,
+    },
+    /// Find a message by `Message-ID` (its uid is not known, e.g. after a move).
+    Locate {
+        folder: String,
+        message_id: String,
+    },
     Delete {
         folder: String,
         uid: u32,
         trash: Option<String>,
     },
     Send {
-        message: OutgoingMessage,
+        message: Box<OutgoingMessage>,
         sent_folder: Option<String>,
     },
     Ping,
@@ -51,12 +74,35 @@ pub enum Event {
     Body {
         folder: String,
         uid: u32,
-        body: MessageBody,
+        body: Box<MessageBody>,
     },
     SeenChanged {
         folder: String,
         uid: u32,
         seen: bool,
+    },
+    FlaggedChanged {
+        folder: String,
+        uid: u32,
+        flagged: bool,
+    },
+    Moved {
+        folder: String,
+        uid: u32,
+        to: String,
+    },
+    SearchResults {
+        query: String,
+        messages: Vec<MessageSummary>,
+    },
+    Located {
+        message_id: String,
+        summary: Option<Box<MessageSummary>>,
+    },
+    /// The document index of the account (from the indexer thread), with what it is doing.
+    Documents {
+        entries: DocList,
+        status: Option<String>,
     },
     Deleted {
         folder: String,
@@ -123,8 +169,10 @@ impl Drop for AccountWorker {
     }
 }
 
-/// Run `op` on a live session, reconnecting once if the session is dead.
-fn with_session<T>(
+/// Run `op` on a live session, reconnecting once if the session is dead. A session that failed
+/// or went out of step is never used again: the IMAP library panics when replies and commands
+/// no longer match, so such a panic is caught here and costs only the connection.
+pub(crate) fn with_session<T>(
     account: &Account,
     password: &str,
     session: &mut Option<ImapClient>,
@@ -137,13 +185,24 @@ fn with_session<T>(
         let Some(client) = session.as_mut() else {
             return Err(Error::other("sessione assente"));
         };
-        match op(client) {
-            Ok(v) => return Ok(v),
+        let outcome = catch_unwind(AssertUnwindSafe(|| op(client)))
+            .unwrap_or_else(|_| Err(Error::Imap("risposta del server non valida".into())));
+        let broken = session.as_ref().is_none_or(|c| c.broken);
+        match outcome {
+            Ok(v) => {
+                if broken {
+                    *session = None;
+                }
+                return Ok(v);
+            }
             Err(e) if attempt == 0 => {
                 log::warn!("{}: {e}; riconnetto", account.email);
                 *session = None;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                *session = None;
+                return Err(e);
+            }
         }
     }
     Err(Error::other("connessione IMAP non disponibile"))
@@ -189,7 +248,7 @@ fn run(
                     |body| Event::Body {
                         folder: folder.clone(),
                         uid,
-                        body,
+                        body: Box::new(body),
                     },
                 )
             }
@@ -201,6 +260,63 @@ fn run(
                     folder: folder.clone(),
                     uid,
                     seen,
+                })
+            }
+            Request::SetFlagged {
+                folder,
+                uid,
+                flagged,
+            } => with_session(&account, &password, &mut session, |c| {
+                c.set_flagged(&folder, uid, flagged)
+            })
+            .map(|_| Event::FlaggedChanged {
+                folder: folder.clone(),
+                uid,
+                flagged,
+            }),
+            Request::Move { folder, uid, to } => {
+                with_session(&account, &password, &mut session, |c| {
+                    c.move_to(&folder, uid, &to)
+                })
+                .map(|_| Event::Moved {
+                    folder: folder.clone(),
+                    uid,
+                    to: to.clone(),
+                })
+            }
+            Request::Search {
+                folders,
+                query,
+                limit,
+            } => {
+                let mut messages = Vec::new();
+                let mut last_error = None;
+                for folder in &folders {
+                    match with_session(&account, &password, &mut session, |c| {
+                        c.search(folder, &query, limit)
+                    }) {
+                        Ok(found) => messages.extend(found),
+                        Err(e) => {
+                            log::warn!("{}: ricerca in {folder}: {e}", account.email);
+                            last_error = Some(e);
+                        }
+                    }
+                }
+                match last_error {
+                    Some(e) if messages.is_empty() => Err(e),
+                    _ => Ok(Event::SearchResults {
+                        query: query.clone(),
+                        messages,
+                    }),
+                }
+            }
+            Request::Locate { folder, message_id } => {
+                with_session(&account, &password, &mut session, |c| {
+                    c.find_by_message_id(&folder, &message_id)
+                })
+                .map(|found| Event::Located {
+                    message_id: message_id.clone(),
+                    summary: found.map(Box::new),
                 })
             }
             Request::Delete { folder, uid, trash } => {
@@ -297,6 +413,10 @@ fn label(req: &Request) -> String {
         Request::LoadMessages { folder, .. } => format!("Lettura di {folder}"),
         Request::LoadBody { .. } => "Apertura messaggio".into(),
         Request::SetSeen { .. } => "Segna letto/non letto".into(),
+        Request::SetFlagged { .. } => "Contrassegno".into(),
+        Request::Move { .. } => "Spostamento".into(),
+        Request::Search { .. } => "Ricerca sul server".into(),
+        Request::Locate { .. } => "Apertura messaggio".into(),
         Request::Delete { .. } => "Eliminazione".into(),
         Request::Send { .. } => "Invio".into(),
         Request::Ping => "Accesso".into(),
